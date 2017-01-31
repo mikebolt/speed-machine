@@ -113,7 +113,7 @@ simulate_machines(const MachineLocation *machine_locations,
 			tape[tape_position] += valid * diff; // If valid, then change symbol, else remain.
 
 			// Move the tape head.
-			tape_position += transition.movement;
+			tape_position += valid * transition.movement;
 			valid = valid && (tape_position >= 0);
 
 			// Transition to the next state.
