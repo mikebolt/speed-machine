@@ -13,6 +13,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#include <Windows.h>
+
 // For the CUDA runtime routines (prefixed with "cuda_")
 #include <cuda_runtime.h>
 
@@ -167,15 +169,11 @@ main(void)
 		Transition *transition;
 		
 		transition = &transitions_block[i * NUM_POSSIBLE_CONDITIONS + CONDITION(0, 0)];
-		//transition->condition_state = 0;
-		//transition->condition_symbol = 0;
 		transition->print_symbol = 1;
 		transition->movement = 1;
 		transition->target_state = 1;
 
 		transition = &transitions_block[i * NUM_POSSIBLE_CONDITIONS + CONDITION(1, 0)];
-		//transition->condition_state = 1;
-		//transition->condition_symbol = 0;
 		transition->print_symbol = 2;
 		transition->movement = 1;
 		transition->target_state = 0;
@@ -205,28 +203,30 @@ main(void)
 	}
 
 
-	err = cudaMemcpy(device_machine_locations, machine_locations,
+	DWORD before = GetTickCount();
+	int num_batches = 1000;
+	for (int batch = 0; batch < num_batches; ++batch) {
+
+		err = cudaMemcpy(device_machine_locations, machine_locations,
 			num_machines * sizeof(MachineLocation), cudaMemcpyHostToDevice);
-	if (err != cudaSuccess) {
-		fprintf(stderr, "Failed to copy machine_locations to device. Error code %s.\n", cudaGetErrorString(err));
-		exit(EXIT_FAILURE);
-	}
+		if (err != cudaSuccess) {
+			fprintf(stderr, "Failed to copy machine_locations to device. Error code %s.\n", cudaGetErrorString(err));
+			exit(EXIT_FAILURE);
+		}
 
-	err = cudaMemcpy(device_transitions_block, transitions_block,
+		err = cudaMemcpy(device_transitions_block, transitions_block,
 			num_machines * NUM_POSSIBLE_CONDITIONS * sizeof(Transition), cudaMemcpyHostToDevice);
-	if (err != cudaSuccess) {
-		fprintf(stderr, "Failed to copy transitions_block to device. Error code %s.\n", cudaGetErrorString(err));
-		exit(EXIT_FAILURE);
-	}
+		if (err != cudaSuccess) {
+			fprintf(stderr, "Failed to copy transitions_block to device. Error code %s.\n", cudaGetErrorString(err));
+			exit(EXIT_FAILURE);
+		}
 
-	err = cudaMemcpy(device_tape_block, tape_block,
+		err = cudaMemcpy(device_tape_block, tape_block,
 			num_machines * TAPE_SIZE * sizeof(uint_16), cudaMemcpyHostToDevice);
-	if (err != cudaSuccess) {
-		fprintf(stderr, "Failed to copy tape_block to device. Error code %s.\n", cudaGetErrorString(err));
-		exit(EXIT_FAILURE);
-	}
-
-	for (int batch = 0; batch < 1000; ++batch) {
+		if (err != cudaSuccess) {
+			fprintf(stderr, "Failed to copy tape_block to device. Error code %s.\n", cudaGetErrorString(err));
+			exit(EXIT_FAILURE);
+		}
 
 		// Launch the Vector Add CUDA Kernel
 		int threadsPerBlock = 256;
@@ -249,6 +249,10 @@ main(void)
 		}
 	}
 
+	DWORD after = GetTickCount();
+
+	printf("Simulating %ld machines took %ld milliseconds.\n", (long)(num_batches * num_machines), (long) (after - before));
+
     // Copy the device result vector in device memory to the host result vector
     // in host memory.
     printf("Copy output data from the CUDA device to the host memory\n");
@@ -260,7 +264,7 @@ main(void)
         exit(EXIT_FAILURE);
     }
 
-    // Verify that the result vector is correct
+    // Print out the last results.
 	/*
     for (int i = 0; i < num_machines; ++i)
     {
