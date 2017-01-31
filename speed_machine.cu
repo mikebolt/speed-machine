@@ -125,49 +125,107 @@ simulate_machines(const MachineLocation *machine_locations,
 	}
 }
 
+void allocate_host_memory(int num_machines, MachineLocation **machine_locations,
+	Transition **transitions_block, uint_16 **tape_block);
+void create_example_machines(int num_machines, MachineLocation *machine_locations,
+	Transition *transitions_block, uint_16 *tape_block);
+void allocate_device_memory(int num_machines, MachineLocation **device_machine_locations,
+	Transition **device_transitions_block, uint_16 **device_tape_block);
+void simulate_machines(int num_machines, MachineLocation *machine_locations, MachineLocation *device_machine_locations,
+	Transition *transitions_block, Transition *device_transitions_block, uint_16 *tape_block, uint_16 *device_tape_block);
+void copy_memory_to_device(int num_machines, MachineLocation *machine_locations, MachineLocation *device_machine_locations,
+	Transition *transitions_block, Transition *device_transitions_block, uint_16 *tape_block, uint_16 *device_tape_block);
+void free_device_memory(MachineLocation *device_machine_locations,
+	Transition *device_transitions_block, uint_16 *device_tape_block);
+void free_host_memory(MachineLocation *machine_locations,
+	Transition *transitions_block, uint_16 *tape_block);
+
 /**
  * Host main routine
  */
 int
 main(void)
 {
-    // Error code to check return values for CUDA calls
-    cudaError_t err = cudaSuccess;
-
 	int num_machines = 1280; // Max cores for GTX 1060
-	//int transitions_per_machine = 6; // lots
 
+	MachineLocation *machine_locations = NULL;
+	Transition *transitions_block = NULL;
+	uint_16 *tape_block = NULL;
+
+	allocate_host_memory(num_machines, &machine_locations, &transitions_block, &tape_block);
+	create_example_machines(num_machines, machine_locations, transitions_block, tape_block);
+
+	MachineLocation *device_machine_locations = NULL;
+	Transition *device_transitions_block = NULL;
+	uint_16 *device_tape_block = NULL;
+
+	allocate_device_memory(num_machines, &device_machine_locations, &device_transitions_block, &device_tape_block);
+
+	DWORD before = GetTickCount();
+	int num_batches = 4;
+
+	for (int batch = 0; batch < num_batches; ++batch) {
+		simulate_machines(num_machines, machine_locations, device_machine_locations,
+			transitions_block, device_transitions_block, tape_block, device_tape_block);
+
+		printf("Simulated batch #%i\n", batch + 1);
+
+		for (int i = 0; i < num_machines; ++i)
+		{
+			printf("%i: %i,%i,%i,%i,%i,%i,%i,%i\n", i,
+				(int)tape_block[i * TAPE_SIZE + 0], (int)tape_block[i * TAPE_SIZE + 1],
+				(int)tape_block[i * TAPE_SIZE + 2], (int)tape_block[i * TAPE_SIZE + 3],
+				(int)tape_block[i * TAPE_SIZE + 4], (int)tape_block[i * TAPE_SIZE + 5],
+				(int)tape_block[i * TAPE_SIZE + 6], (int)tape_block[i * TAPE_SIZE + 7]);
+		}
+
+		// The final tapes are stored in tape_block now, so clear it for the next iteration.
+		memset(tape_block, 0, num_machines * TAPE_SIZE * sizeof(uint_16));
+	}
+
+	DWORD after = GetTickCount();
+	printf("Simulating %ld machines took %ld milliseconds.\n", (long)(num_batches * num_machines), (long)(after - before));
+
+	free_device_memory(device_machine_locations, device_transitions_block, device_tape_block);
+
+	// Free host memory
+	free_host_memory(machine_locations, transitions_block, tape_block);
+
+	return 0;
+}
+
+void allocate_host_memory(int num_machines, MachineLocation **machine_locations,
+						  Transition **transitions_block, uint_16 **tape_block) {
 	// Allocate space for the MachineLocations
-	MachineLocation *machine_locations =
-			(MachineLocation *) malloc(num_machines * sizeof(MachineLocation));
-	if (machine_locations == NULL) {
+	*machine_locations = (MachineLocation *)malloc(num_machines * sizeof(MachineLocation));
+	if (*machine_locations == NULL) {
 		fprintf(stderr, "malloc returned NULL for machine_locations.");
 		exit(EXIT_FAILURE);
 	}
 
-	Transition *transitions_block =
-			(Transition *) malloc(num_machines * NUM_POSSIBLE_CONDITIONS * sizeof(Transition));
-	if (transitions_block == NULL) {
+	*transitions_block = (Transition *)malloc(num_machines * NUM_POSSIBLE_CONDITIONS * sizeof(Transition));
+	if (*transitions_block == NULL) {
 		fprintf(stderr, "malloc returned NULL for transitions_block.");
 		exit(EXIT_FAILURE);
 	}
 
-	uint_16 *tape_block =
-			(uint_16 *) calloc(num_machines * TAPE_SIZE, sizeof(uint_16));
-	if (tape_block == NULL) {
+	*tape_block = (uint_16 *)calloc(num_machines * TAPE_SIZE, sizeof(uint_16));
+	if (*tape_block == NULL) {
 		fprintf(stderr, "malloc returned NULL for tape_block.");
 		exit(EXIT_FAILURE);
 	}
+}
 
-	// initialize machines
-
+void create_example_machines(int num_machines, MachineLocation *machine_locations,
+							 Transition *transitions_block, uint_16 *tape_block) {
+	// Initialize the machines.
 	for (int i = 0; i < num_machines; ++i) {
 		MachineLocation *machine_location = &machine_locations[i];
 		machine_location->base_transition_index = i * NUM_POSSIBLE_CONDITIONS;
 		machine_location->num_transitions = NUM_POSSIBLE_CONDITIONS;
 
 		Transition *transition;
-		
+
 		transition = &transitions_block[i * NUM_POSSIBLE_CONDITIONS + CONDITION(0, 0)];
 		transition->print_symbol = 1;
 		transition->movement = 1;
@@ -178,84 +236,62 @@ main(void)
 		transition->movement = 1;
 		transition->target_state = 0;
 	}
+}
 
-	// Clear the host tape with zeros.
+void allocate_device_memory(int num_machines, MachineLocation **device_machine_locations,
+						    Transition **device_transitions_block, uint_16 **device_tape_block) {
+	cudaError_t err = cudaSuccess;
 
-	MachineLocation *device_machine_locations = NULL;
-	err = cudaMalloc((void **)&device_machine_locations, num_machines * sizeof(MachineLocation));
+	*device_machine_locations = NULL;
+	err = cudaMalloc((void **)device_machine_locations, num_machines * sizeof(MachineLocation));
 	if (err != cudaSuccess) {
 		fprintf(stderr, "Failed to allocate device memory for machine_locations.\n", cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
 
-	Transition *device_transitions_block = NULL;
-	err = cudaMalloc((void **)&device_transitions_block, num_machines * NUM_POSSIBLE_CONDITIONS * sizeof(Transition));
+	*device_transitions_block = NULL;
+	err = cudaMalloc((void **)device_transitions_block, num_machines * NUM_POSSIBLE_CONDITIONS * sizeof(Transition));
 	if (err != cudaSuccess) {
 		fprintf(stderr, "Failed to allocate device memory for transitions_block.\n", cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
 
-	uint_16 *device_tape_block = NULL;
-	err = cudaMalloc((void **)&device_tape_block, num_machines * TAPE_SIZE * sizeof(uint_16));
+	*device_tape_block = NULL;
+	err = cudaMalloc((void **)device_tape_block, num_machines * TAPE_SIZE * sizeof(uint_16));
 	if (err != cudaSuccess) {
 		fprintf(stderr, "Failed to allocate device memory for tape_block.\n", cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
+}
 
 
-	DWORD before = GetTickCount();
-	int num_batches = 1000;
-	for (int batch = 0; batch < num_batches; ++batch) {
+void simulate_machines(int num_machines, MachineLocation *machine_locations, MachineLocation *device_machine_locations,
+		               Transition *transitions_block, Transition *device_transitions_block, uint_16 *tape_block, uint_16 *device_tape_block) {
 
-		err = cudaMemcpy(device_machine_locations, machine_locations,
-			num_machines * sizeof(MachineLocation), cudaMemcpyHostToDevice);
-		if (err != cudaSuccess) {
-			fprintf(stderr, "Failed to copy machine_locations to device. Error code %s.\n", cudaGetErrorString(err));
-			exit(EXIT_FAILURE);
-		}
+    // Error code to check return values for CUDA calls
+    cudaError_t err = cudaSuccess;
 
-		err = cudaMemcpy(device_transitions_block, transitions_block,
-			num_machines * NUM_POSSIBLE_CONDITIONS * sizeof(Transition), cudaMemcpyHostToDevice);
-		if (err != cudaSuccess) {
-			fprintf(stderr, "Failed to copy transitions_block to device. Error code %s.\n", cudaGetErrorString(err));
-			exit(EXIT_FAILURE);
-		}
+	copy_memory_to_device(num_machines, machine_locations, device_machine_locations,
+			transitions_block, device_transitions_block, tape_block, device_tape_block);
 
-		err = cudaMemcpy(device_tape_block, tape_block,
-			num_machines * TAPE_SIZE * sizeof(uint_16), cudaMemcpyHostToDevice);
-		if (err != cudaSuccess) {
-			fprintf(stderr, "Failed to copy tape_block to device. Error code %s.\n", cudaGetErrorString(err));
-			exit(EXIT_FAILURE);
-		}
+	// Launch the CUDA Kernel.
+	int threadsPerBlock = 256;
+	int blocksPerGrid = (num_machines + threadsPerBlock - 1) / threadsPerBlock;
+	printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
+	simulate_machines <<<blocksPerGrid, threadsPerBlock>>>
+		(device_machine_locations,
+			device_transitions_block,
+			device_tape_block,
+			num_machines);
+	err = cudaGetLastError();
 
-		// Launch the Vector Add CUDA Kernel
-		int threadsPerBlock = 256;
-		int blocksPerGrid = (num_machines + threadsPerBlock - 1) / threadsPerBlock;
-		printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
-		simulate_machines <<<blocksPerGrid, threadsPerBlock>>>
-			(device_machine_locations,
-				device_transitions_block,
-				device_tape_block,
-				num_machines);
-		err = cudaGetLastError();
-
-		if (err != cudaSuccess)
-		{
-			fprintf(stderr, "Failed to launch simulate_machines kernel (error code %s)!\n", cudaGetErrorString(err));
-			exit(EXIT_FAILURE);
-		}
-		else {
-			printf("Simulated batch #%i\n", batch + 1);
-		}
+	if (err != cudaSuccess)
+	{
+		fprintf(stderr, "Failed to launch simulate_machines kernel (error code %s)!\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
 	}
 
-	DWORD after = GetTickCount();
-
-	printf("Simulating %ld machines took %ld milliseconds.\n", (long)(num_batches * num_machines), (long) (after - before));
-
-    // Copy the device result vector in device memory to the host result vector
-    // in host memory.
-    printf("Copy output data from the CUDA device to the host memory\n");
+    // Copy the device result tape_block to the host tape_block.
     err = cudaMemcpy(tape_block, device_tape_block, num_machines * TAPE_SIZE * sizeof(uint_16), cudaMemcpyDeviceToHost);
 
     if (err != cudaSuccess)
@@ -263,44 +299,62 @@ main(void)
         fprintf(stderr, "Failed to copy vector C from device to host (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
+}
 
-    // Print out the last results.
-	/*
-    for (int i = 0; i < num_machines; ++i)
-    {
-		printf("%i: %i,%i,%i,%i,%i,%i,%i,%i\n", i,
-			(int)tape_block[i * TAPE_SIZE + 0], (int)tape_block[i * TAPE_SIZE + 1],
-			(int)tape_block[i * TAPE_SIZE + 2], (int)tape_block[i * TAPE_SIZE + 3],
-			(int)tape_block[i * TAPE_SIZE + 4], (int)tape_block[i * TAPE_SIZE + 5],
-			(int)tape_block[i * TAPE_SIZE + 6], (int)tape_block[i * TAPE_SIZE + 7]);
-    }
-	*/
+void copy_memory_to_device(int num_machines, MachineLocation *machine_locations, MachineLocation *device_machine_locations,
+		Transition *transitions_block, Transition *device_transitions_block, uint_16 *tape_block, uint_16 *device_tape_block) {
+	cudaError_t err = cudaSuccess;
 
-    // Free device global memory
-    err = cudaFree(device_machine_locations);
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Failed to free device memory for machine_locations.\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
+	err = cudaMemcpy(device_machine_locations, machine_locations,
+		num_machines * sizeof(MachineLocation), cudaMemcpyHostToDevice);
+	if (err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy machine_locations to device. Error code %s.\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
 
-    err = cudaFree(device_transitions_block);
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Failed to free device memory for transitions_block.\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
+	err = cudaMemcpy(device_transitions_block, transitions_block,
+		num_machines * NUM_POSSIBLE_CONDITIONS * sizeof(Transition), cudaMemcpyHostToDevice);
+	if (err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy transitions_block to device. Error code %s.\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
 
-    err = cudaFree(device_tape_block);
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Failed to free device memory for tape_block.\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
+	err = cudaMemcpy(device_tape_block, tape_block,
+		num_machines * TAPE_SIZE * sizeof(uint_16), cudaMemcpyHostToDevice);
+	if (err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy tape_block to device. Error code %s.\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+}
 
-    // Free host memory
-    free(machine_locations);
-    free(transitions_block);
-    free(tape_block);
+void free_device_memory(MachineLocation *device_machine_locations,
+		Transition *device_transitions_block, uint_16 *device_tape_block) {
+	cudaError_t err = cudaSuccess;
 
-    printf("Done\n");
-    return 0;
+	// Free device global memory
+	err = cudaFree(device_machine_locations);
+	if (err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device memory for machine_locations.\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaFree(device_transitions_block);
+	if (err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device memory for transitions_block.\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaFree(device_tape_block);
+	if (err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device memory for tape_block.\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+}
+
+void free_host_memory(MachineLocation *machine_locations,
+		Transition *transitions_block, uint_16 *tape_block) {
+	free(machine_locations);
+	free(transitions_block);
+	free(tape_block);
 }
 
